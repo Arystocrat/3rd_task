@@ -8,14 +8,10 @@ import hashlib
 from tabulate import tabulate
 
 # ==============================================================================
-# 1. Error Handling Class (FINAL, CORRECTED VERSION)
+# 1. Error Handling Class
 # ==============================================================================
 
 class ValidationError(Exception):
-    """
-    Custom exception for argument validation errors.
-    Provides a platform-aware, helpful message with correct usage examples.
-    """
     def __init__(self, message: str):
         self.message = message
         super().__init__(self.message)
@@ -23,24 +19,16 @@ class ValidationError(Exception):
     def __str__(self) -> str:
         script_name = sys.argv[0] if sys.argv else 'game.py'
         example_args = "2,2,4,4,9,9 1,1,6,6,8,8 3,3,5,5,7,7"
-        
-        # Create a platform-specific example
         if sys.platform == "win32":
-            # For Windows, show both common commands since 'py' and 'python' can be used
-            example = (
-                f"py {script_name} {example_args}\n"
-                f"(or: python {script_name} {example_args})"
-            )
+            example = (f"py {script_name} {example_args}\n"
+                       f"(or: python {script_name} {example_args})")
         else:
-            # For Linux/macOS, 'python3' is the standard
             example = f"python3 {script_name} {example_args}"
-
         return f"\nArgument Error: {self.message}\n\nExample usage:\n{example}\n"
 
 ValidationError.NOT_ENOUGH_DICE = ValidationError("Please specify at least three dice.")
 ValidationError.INCONSISTENT_FACES = ValidationError("All dice must have the same number of faces.")
 ValidationError.NON_INTEGER_VALUE = ValidationError("All dice faces must be integer values.")
-
 
 # ==============================================================================
 # 2. Data Structure for a Die
@@ -48,8 +36,6 @@ ValidationError.NON_INTEGER_VALUE = ValidationError("All dice faces must be inte
 
 class Die:
     def __init__(self, faces: list[int]):
-        if not faces:
-            raise ValueError("A die must have at least one face.")
         self.faces = faces
 
     def __str__(self) -> str:
@@ -121,12 +107,9 @@ class HelpTableGenerator:
                 cell = f"*{prob:.4f}*" if user_die is pc_die else f"{prob:.4f}"
                 row.append(cell)
             table_data.append(row)
-        
-        intro = (
-            "\n--- Win Probability Table ---\n"
-            "This table shows the probability of the User's die (rows) winning against the PC's die (columns).\n"
-            "* Diagonal values show probability of a die winning against an identical one.\n"
-        )
+        intro = ("\n--- Win Probability Table ---\n"
+                 "This table shows the probability of the User's die (rows) winning against the PC's die (columns).\n"
+                 "* Diagonal values show probability of a die winning against an identical one.\n")
         return intro + tabulate(table_data, headers=headers, tablefmt="grid")
 
 # ==============================================================================
@@ -143,39 +126,39 @@ class GameUI:
     def display_key_and_move(self, key: bytes, move: int, name: str = "My choice"):
         print(f"{name}: {move} (Secret Key: {key.hex().upper()})")
 
-    def get_user_choice(self, prompt: str, options: list[str], allow_help: bool = True) -> str:
+    def get_user_choice(self, prompt: str, options: list[str]) -> str:
         while True:
             print(f"\n{prompt}")
             for i, option in enumerate(options):
                 print(f" {i} - {option}")
-            
-            print("\n X - Exit")
-            if allow_help:
-                print(" ? - Help")
-
+            print("\n ? - Help\n X - Exit")
             choice = input("Your choice: ").strip().lower()
 
             if choice == 'x':
                 print("Exiting game. Goodbye!")
                 sys.exit(0)
-            if choice == '?' and allow_help:
+            if choice == '?':
                 return '?'
-            
             if choice.isdigit():
                 choice_int = int(choice)
                 if 0 <= choice_int < len(options):
                     return str(choice_int)
-            
             print("Invalid choice. Please enter a valid number, '?', or 'X'.")
 
 # ==============================================================================
-# 8. Provably Fair Random Number Generation & Game Logic
+# 8. Provably Fair Random Number Generation & Game Logic (CORRECTED)
 # ==============================================================================
 
 class FairInteraction:
-    def __init__(self, crypto_provider: CryptoProvider, ui: GameUI):
-        self.crypto = crypto_provider
+    def __init__(self, crypto: CryptoProvider, ui: GameUI, help_gen: HelpTableGenerator, dice: list[Die]):
+        self.crypto = crypto
         self.ui = ui
+        self.help_gen = help_gen
+        self.dice = dice
+
+    def _show_help(self):
+        table = self.help_gen.generate_table(self.dice, ProbabilityCalculator)
+        self.ui.display_message(table)
 
     def determine_first_player(self) -> bool:
         self.ui.display_message("\nLet's determine who makes the first move.")
@@ -184,13 +167,17 @@ class FairInteraction:
         hmac_val = self.crypto.calculate_hmac(key, computer_bit)
         self.ui.display_message(f"I have chosen a random value in range 0..1 (HMAC={hmac_val}).")
         
-        options = ["0", "1"]
-        user_bit_str = self.ui.get_user_choice("Try to guess my choice.", options, allow_help=False)
-        user_bit = int(user_bit_str)
-        
-        self.ui.display_key_and_move(key, computer_bit)
-        user_goes_first = (user_bit == computer_bit)
-        return user_goes_first
+        while True:
+            options = ["0", "1"]
+            # CORRECTED: Added the 'options' argument to the call
+            user_bit_str = self.ui.get_user_choice("Try to guess my choice.", options)
+            if user_bit_str == '?':
+                self._show_help()
+                continue
+            
+            user_bit = int(user_bit_str)
+            self.ui.display_key_and_move(key, computer_bit)
+            return user_bit == computer_bit
 
     def get_fair_roll_index(self, max_val: int, prompt: str) -> int:
         self.ui.display_message(f"I have chosen a random value in range 0..{max_val-1}.")
@@ -198,27 +185,30 @@ class FairInteraction:
         key = self.crypto.generate_key()
         hmac_val = self.crypto.calculate_hmac(key, computer_move)
         self.ui.display_hmac(hmac_val)
-
-        options = [str(i) for i in range(max_val)]
-        user_move_str = self.ui.get_user_choice(prompt, options, allow_help=False)
-        user_move = int(user_move_str)
         
-        result = (computer_move + user_move) % max_val
-        
-        self.ui.display_key_and_move(key, computer_move, name="My number")
-        self.ui.display_message(f"Fair random number result: ({computer_move} + {user_move}) mod {max_val} = {result}")
-        return result
+        while True:
+            options = [str(i) for i in range(max_val)]
+            # CORRECTED: Added the 'options' argument to the call
+            user_move_str = self.ui.get_user_choice(prompt, options)
+            if user_move_str == '?':
+                self._show_help()
+                continue
+            
+            user_move = int(user_move_str)
+            result = (computer_move + user_move) % max_val
+            self.ui.display_key_and_move(key, computer_move, name="My number")
+            self.ui.display_message(f"Fair random number result: ({computer_move} + {user_move}) mod {max_val} = {result}")
+            return result
 
 # ==============================================================================
 # 9. Main Game Controller
 # ==============================================================================
 
 class GameController:
-    def __init__(self, dice: list[Die], ui: GameUI, interaction: FairInteraction, help_gen: HelpTableGenerator):
+    def __init__(self, dice: list[Die], ui: GameUI, interaction: FairInteraction):
         self.all_dice = dice
         self.ui = ui
         self.interaction = interaction
-        self.help_gen = help_gen
 
     def run(self):
         self.ui.display_message("--- Welcome to the Non-Transitive Dice Game! ---")
@@ -231,7 +221,6 @@ class GameController:
 
     def _play_round(self):
         user_goes_first = self.interaction.determine_first_player()
-        
         player_die, computer_die = self._select_dice(user_goes_first)
         
         self.ui.display_message(f"\nYour die: [{player_die}]")
@@ -281,9 +270,9 @@ class GameController:
     def _get_player_die_choice(self, available_dice: list[Die]):
         while True:
             options = [str(d) for d in available_dice]
-            choice_str = self.ui.get_user_choice("Select your dice:", options, allow_help=True)
+            choice_str = self.ui.get_user_choice("Select your dice:", options)
             if choice_str == '?':
-                table = self.help_gen.generate_table(self.all_dice, ProbabilityCalculator)
+                table = HelpTableGenerator.generate_table(self.all_dice, ProbabilityCalculator)
                 self.ui.display_message(table)
                 continue
             return available_dice[int(choice_str)]
@@ -300,9 +289,9 @@ def main():
         ui = GameUI()
         crypto = CryptoProvider()
         help_gen = HelpTableGenerator()
-        interaction = FairInteraction(crypto, ui)
+        interaction = FairInteraction(crypto, ui, help_gen, dice)
         
-        controller = GameController(dice, ui, interaction, help_gen)
+        controller = GameController(dice, ui, interaction)
         controller.run()
 
     except ValidationError as e:
