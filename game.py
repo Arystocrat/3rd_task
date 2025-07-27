@@ -1,3 +1,4 @@
+
 import sys
 import secrets
 import hmac
@@ -5,17 +6,31 @@ import hashlib
 from tabulate import tabulate
 
 # ==============================================================================
-# 1. Error Handling Class
+# 1. Error Handling Class (UPDATED)
 # ==============================================================================
 
 class ValidationError(Exception):
+    """
+    Custom exception for argument validation errors.
+    Provides a formatted message including an example of correct usage.
+    """
+    _invocation_command = "python"
+
+    @staticmethod
+    def set_invocation_command(command: str):
+        """Sets the command used to run the script (e.g., 'python' or 'py')."""
+        ValidationError._invocation_command = command
+
     def __init__(self, message: str):
         self.message = message
         super().__init__(self.message)
 
     def __str__(self) -> str:
         script_name = sys.argv[0] if sys.argv else 'game.py'
-        example = f"python {script_name} 2,2,4,4,9,9 1,1,6,6,8,8 3,3,5,5,7,7"
+        example = (
+            f"{ValidationError._invocation_command} {script_name} "
+            f"2,2,4,4,9,9 1,1,6,6,8,8 3,3,5,5,7,7"
+        )
         return f"\nArgument Error: {self.message}\n\nExample usage:\n{example}\n"
 
 ValidationError.NOT_ENOUGH_DICE = ValidationError("Please specify at least three dice.")
@@ -158,9 +173,6 @@ class FairInteraction:
         self.ui = ui
 
     def determine_first_player(self) -> bool:
-        """
-        Determines who goes first. Returns True if the user goes first.
-        """
         self.ui.display_message("\nLet's determine who makes the first move.")
         computer_bit = self.crypto.generate_secure_random(2)
         key = self.crypto.generate_key()
@@ -176,9 +188,6 @@ class FairInteraction:
         return user_goes_first
 
     def get_fair_roll_index(self, max_val: int, prompt: str) -> int:
-        """
-        Generates a fair random index using modular arithmetic.
-        """
         self.ui.display_message(f"I have chosen a random value in range 0..{max_val-1}.")
         computer_move = self.crypto.generate_secure_random(max_val)
         key = self.crypto.generate_key()
@@ -275,11 +284,17 @@ class GameController:
             return available_dice[int(choice_str)]
 
 # ==============================================================================
-# 10. Main Execution Block
+# 10. Main Execution Block (UPDATED)
 # ==============================================================================
 
 def main():
     try:
+        # Dynamically determine the command used to invoke the script
+        if 'py.exe' in sys.executable.lower():
+            ValidationError.set_invocation_command('py')
+        else:
+            ValidationError.set_invocation_command('python')
+
         args = sys.argv[1:]
         dice = DiceParser.parse(args)
         
