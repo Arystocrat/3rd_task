@@ -1,306 +1,371 @@
 import sys
-import os
+import secrets
 import hmac
 import hashlib
-import secrets
 from tabulate import tabulate
 
-# -----------------------------------------------------------------------------
-# 1. ABSTRACTION FOR A SINGLE DIE
-# -----------------------------------------------------------------------------
-class Dice:
-    """Represents a single die with a specific set of faces."""
+# ==============================================================================
+# 1. Error Handling Class
+# ==============================================================================
+
+class ValidationError(Exception):
+    """
+    Custom exception for argument validation errors.
+    Provides a formatted message including an example of correct usage.
+    """
+    def __init__(self, message: str):
+        self.message = message
+        super().__init__(self.message)
+
+    def __str__(self) -> str:
+        # Dynamically get the script name for the example usage
+        script_name = sys.argv[0] if sys.argv else 'game.py'
+        example = f"python {script_name} 2,2,4,4,9,9 1,1,6,6,8,8 3,3,5,5,7,7"
+        return f"\nArgument Error: {self.message}\n\nExample usage:\n{example}\n"
+
+# Predefined error instances for extension without modification
+ValidationError.NOT_ENOUGH_DICE = ValidationError("Please specify at least three dice.")
+ValidationError.INCONSISTENT_FACES = ValidationError("All dice must have the same number of faces.")
+ValidationError.NON_INTEGER_VALUE = ValidationError("All dice faces must be integer values.")
+
+
+# ==============================================================================
+# 2. Data Structure for a Die
+# ==============================================================================
+
+class Die:
+    """Represents a single die with a list of face values."""
     def __init__(self, faces: list[int]):
         if not faces:
+            # This case should be caught by INCONSISTENT_FACES check, but as a safeguard:
             raise ValueError("A die must have at least one face.")
         self.faces = faces
 
-    def roll(self, index: int) -> int:
-        """Returns the value of a face at a given index."""
-        return self.faces[index]
-
     def __str__(self) -> str:
-        return f"[{','.join(map(str, self.faces))}]"
+        """Returns a string representation like '1,2,3,4,5,6'."""
+        return ",".join(map(str, self.faces))
 
-# -----------------------------------------------------------------------------
-# 2. CRYPTOGRAPHIC OPERATIONS
-# -----------------------------------------------------------------------------
-class Crypto:
-    """Handles secure key generation and HMAC calculation."""
-    def generate_key(self, bits: int = 256) -> bytes:
-        """Generates a cryptographically secure random key."""
-        return os.urandom(bits // 8)
+    def __len__(self) -> int:
+        """Returns the number of faces on the die."""
+        return len(self.faces)
 
-    def calculate_hmac(self, key: bytes, message: bytes) -> str:
-        """Calculates HMAC-SHA3-256 for a given message and key."""
-        return hmac.new(key, message, hashlib.sha3_256).hexdigest().upper()
 
-# -----------------------------------------------------------------------------
-# 3. PROVABLY FAIR RANDOM NUMBER GENERATION PROTOCOL
-# -----------------------------------------------------------------------------
-class FairRandom:
-    """Implements the protocol for provably fair random number generation."""
-    def __init__(self, crypto: Crypto, ui):
-        self._crypto = crypto
-        self._ui = ui
+# ==============================================================================
+# 3. Command-Line Argument Parser
+# ==============================================================================
 
-    def generate(self, max_value: int) -> int | None:
+class DiceParser:
+    """Parses and validates command-line arguments to create Die objects."""
+    @staticmethod
+    def parse(args: list[str]) -> list[Die]:
         """
-        Executes the fair random generation protocol for a number in [0, max_value].
-        Returns the generated number or None if the user exits.
+        Parses a list of string arguments into a list of Die objects.
+        Raises ValidationError on failure.
         """
-        range_size = max_value + 1
-        
-        # 1. Computer generates a secret key and a random number
-        key = self._crypto.generate_key()
-        computer_num = secrets.randbelow(range_size)
-        
-        # 2. Computer calculates and displays HMAC
-        # Message must be bytes. We'll use 8 bytes, which is plenty for our range.
-        message_bytes = computer_num.to_bytes(8, 'big')
-        hmac_val = self._crypto.calculate_hmac(key, message_bytes)
-        
-        print(f"I selected a random value in the range 0..{max_value} (HMAC={hmac_val}).")
-        
-        # 3. User selects their number
-        options = {i: str(i) for i in range(range_size)}
-        user_choice = self._ui.prompt_user("Add your number:", options, show_help=False)
+        if len(args) < 3:
+            raise ValidationError.NOT_ENOUGH_DICE
 
-        if user_choice is None: # User chose to exit
-            return None
-        
-        user_num = int(user_choice)
-            
-        # 4. Calculate final result and reveal computer's choices
-        final_result = (computer_num + user_num) % range_size
-        
-        print(f"My number is {computer_num} (KEY={key.hex().upper()}).")
-        print(f"The fair number generation result is {computer_num} + {user_num} = {final_result} (mod {range_size}).")
-        
-        return final_result
+        dice_list = []
+        try:
+            for arg_string in args:
+                # Handle potential empty strings from trailing commas
+                faces = [int(f) for f in arg_string.split(',') if f]
+                dice_list.append(Die(faces))
+        except ValueError:
+            raise ValidationError.NON_INTEGER_VALUE
 
-# -----------------------------------------------------------------------------
-# 4. PROBABILITY CALCULATIONS
-# -----------------------------------------------------------------------------
+        first_die_faces = len(dice_list[0])
+        if not all(len(d) == first_die_faces for d in dice_list):
+            raise ValidationError.INCONSISTENT_FACES
+
+        return dice_list
+
+
+# ==============================================================================
+# 4. Cryptographic Operations Provider
+# ==============================================================================
+
+class CryptoProvider:
+    """Provides cryptographic functionalities like key generation and HMAC calculation."""
+    @staticmethod
+    def generate_key() -> bytes:
+        """Generates a cryptographically secure 256-bit (32-byte) key."""
+        return secrets.token_bytes(32)
+
+    @staticmethod
+    def generate_secure_random(max_val: int) -> int:
+        """Generates a secure, uniformly distributed random integer in [0, max_val-1]."""
+        return secrets.randbelow(max_val)
+
+    @staticmethod
+    def calculate_hmac(key: bytes, message_int: int) -> str:
+        """Calculates HMAC-SHA3-256 for a given integer message and key."""
+        # Convert integer to a consistent byte representation for HMAC
+        message_bytes = str(message_int).encode('utf-8')
+        h = hmac.new(key, message_bytes, hashlib.sha3_256)
+        return h.hexdigest().upper()
+
+
+# ==============================================================================
+# 5. Probability Calculation Logic
+# ==============================================================================
+
 class ProbabilityCalculator:
-    """Calculates the win probability between two dice."""
-    def calculate_win_probability(self, dice1: Dice, dice2: Dice) -> float:
-        """Calculates the probability of dice1 winning against dice2."""
-        wins1 = 0
-        total_outcomes = len(dice1.faces) * len(dice2.faces)
-        
-        for face1 in dice1.faces:
-            for face2 in dice2.faces:
+    """Calculates win probabilities between two dice."""
+    @staticmethod
+    def calculate_win_probability(die1: Die, die2: Die) -> float:
+        """Calculates the probability of die1 winning against die2."""
+        wins = 0
+        total_outcomes = len(die1) * len(die2)
+        if total_outcomes == 0:
+            return 0.0
+
+        for face1 in die1.faces:
+            for face2 in die2.faces:
                 if face1 > face2:
-                    wins1 += 1
+                    wins += 1
         
-        return wins1 / total_outcomes
+        return wins / total_outcomes
 
-# -----------------------------------------------------------------------------
-# 5. HELP TABLE GENERATION
-# -----------------------------------------------------------------------------
-class HelpTable:
-    """Generates and displays the win probability table."""
-    def __init__(self, dice_list: list[Dice], calculator: ProbabilityCalculator):
-        self._dice = dice_list
-        self._calculator = calculator
 
-    def display(self):
-        """Prints the formatted help table to the console."""
-        headers = ["User dice v"] + [str(d) for d in self._dice]
+# ==============================================================================
+# 6. Help Table Generation
+# ==============================================================================
+
+class HelpTableGenerator:
+    """Generates a formatted ASCII table of win probabilities."""
+    @staticmethod
+    def generate_table(all_dice: list[Die], calculator: ProbabilityCalculator) -> str:
+        """Creates the help table showing win probabilities for the USER."""
+        headers = ["v PC | User >"] + [str(d) for d in all_dice]
         table_data = []
 
-        for row_dice in self._dice:
-            row = [str(row_dice)]
-            for col_dice in self._dice:
-                prob = self._calculator.calculate_win_probability(row_dice, col_dice)
-                # Format diagonal differently as requested
-                if row_dice is col_dice:
-                    row.append(f".{int(prob * 10000):<4}") # Example: .3333
+        for user_die in all_dice:
+            row = [str(user_die)]
+            for pc_die in all_dice:
+                if user_die is pc_die:
+                    # Probability of winning against oneself
+                    prob = calculator.calculate_win_probability(user_die, pc_die)
+                    row.append(f"*{float(prob):.4f}*")
                 else:
-                    row.append(f"{prob:.4f}")
+                    prob = calculator.calculate_win_probability(user_die, pc_die)
+                    row.append(f"{float(prob):.4f}")
             table_data.append(row)
-
-        print("\nProbability of the win for the user (row dice vs column dice):")
-        print(tabulate(table_data, headers=headers, tablefmt="grid", numalign="center"))
-        print()
-
-# -----------------------------------------------------------------------------
-# 6. COMMAND-LINE ARGUMENT PARSING
-# -----------------------------------------------------------------------------
-class ArgsParser:
-    """Parses and validates command-line arguments."""
-    def parse(self, args: list[str]) -> list[Dice] | None:
-        """
-        Parses arguments into a list of Dice objects.
-        Returns the list or None if validation fails.
-        """
-        try:
-            if len(args) < 3:
-                raise ValueError("At least 3 dice are required.")
-
-            parsed_dice = []
-            num_faces = 0
-            for i, arg_str in enumerate(args):
-                faces_str = arg_str.split(',')
-                faces_int = [int(f) for f in faces_str]
-                
-                if i == 0:
-                    num_faces = len(faces_int)
-                    if num_faces == 0:
-                         raise ValueError("Dice cannot have 0 faces.")
-                elif len(faces_int) != num_faces:
-                    raise ValueError("All dice must have the same number of faces.")
-                
-                parsed_dice.append(Dice(faces_int))
-            return parsed_dice
-        except ValueError as e:
-            print(f"Error: Invalid arguments. {e}")
-            print("Example: python game.py 2,2,4,4,9,9 1,1,6,6,8,8 3,3,5,5,7,7")
-            return None
-        except Exception:
-            print("Error: Invalid format in dice configuration.")
-            print("Please provide dice as comma-separated integers.")
-            print("Example: python game.py 2,2,4,4,9,9 1,1,6,6,8,8 3,3,5,5,7,7")
-            return None
-
-# -----------------------------------------------------------------------------
-# 7. USER INTERFACE
-# -----------------------------------------------------------------------------
-class UI:
-    """Handles all user interaction, including menus."""
-    def __init__(self, help_table: HelpTable | None = None):
-        self._help_table = help_table
-
-    def prompt_user(self, prompt: str, options: dict, show_help=True) -> str | None:
-        """
-        Displays a menu and gets a valid choice from the user.
-        Returns the choice, or None if the user exits.
-        """
-        while True:
-            print(prompt)
-            for key, value in options.items():
-                print(f"{key} - {value}")
-            print("X - exit")
-            if show_help:
-                print("? - help")
-            
-            selection = input("Your selection: ").strip().upper()
-            
-            if selection == 'X':
-                return None
-            if selection == '?' and show_help:
-                if self._help_table:
-                    self._help_table.display()
-                else:
-                    print("No help available at this moment.")
-                continue
-            
-            # Check if the key is a valid option
-            # We convert keys to str for comparison as input is a string.
-            valid_keys = [str(k) for k in options.keys()]
-            if selection in valid_keys:
-                return selection
-
-            print("Invalid selection, please try again.")
-
-
-# -----------------------------------------------------------------------------
-# 8. MAIN GAME LOGIC
-# -----------------------------------------------------------------------------
-class Game:
-    """Orchestrates the entire game flow."""
-    def __init__(self, dice_list: list[Dice]):
-        self._dice = dice_list
-        self._crypto = Crypto()
         
-        # Dependencies for other classes
-        calculator = ProbabilityCalculator()
-        help_table = HelpTable(self._dice, calculator)
-        self._ui = UI(help_table)
-        self._fair_random = FairRandom(self._crypto, self._ui)
-        self._num_faces = len(self._dice[0].faces) if self._dice else 0
+        intro_text = (
+            "\n--- Win Probability Table ---\n"
+            "This table shows the probability of the User's die (rows) winning against the PC's die (columns).\n"
+            "* Diagonal values show probability of a die winning against an identical one.\n"
+        )
+        return intro_text + tabulate(table_data, headers=headers, tablefmt="grid")
 
+
+# ==============================================================================
+# 7. Console User Interface
+# ==============================================================================
+
+class GameUI:
+    """Handles all console input and output."""
+    def display_message(self, text: str):
+        print(text)
+
+    def display_hmac(self, hmac_hex: str):
+        print(f"HMAC: {hmac_hex}")
+
+    def display_key_and_move(self, key: bytes, move: int, name: str = "My"):
+        print(f"{name} move was: {move} (Secret Key: {key.hex().upper()})")
+
+    def get_user_choice(self, prompt: str, options: list[str], allow_help: bool = True) -> str:
+        """Displays a menu and gets a validated choice from the user."""
+        while True:
+            print(f"\n{prompt}")
+            for i, option in enumerate(options):
+                print(f" {i+1} - {option}")
+            
+            print("\n 0 - Exit")
+            if allow_help:
+                print(" ? - Help")
+
+            choice = input("Your choice: ").strip().lower()
+
+            if choice == '0':
+                print("Exiting game. Goodbye!")
+                sys.exit(0)
+            if choice == '?' and allow_help:
+                return '?'
+            
+            try:
+                choice_int = int(choice)
+                if 1 <= choice_int <= len(options):
+                    return str(choice_int - 1)  # Return zero-based index
+                else:
+                    print("Invalid choice. Please enter a number from the list.")
+            except ValueError:
+                print("Invalid input. Please enter a number, '?' or '0'.")
+
+
+# ==============================================================================
+# 8. Provably Fair Random Number Generation Protocol
+# ==============================================================================
+
+class FairRandomGenerator:
+    """Implements the provably fair random number generation protocol."""
+    def __init__(self, crypto_provider: CryptoProvider, ui: GameUI):
+        self.crypto = crypto_provider
+        self.ui = ui
+
+    def generate(self, max_val: int, prompt: str) -> int:
+        """
+        Executes one full round of fair random generation.
+        Returns the final resulting integer.
+        """
+        computer_move = self.crypto.generate_secure_random(max_val)
+        key = self.crypto.generate_key() # Generate a new key for every single interaction
+        hmac = self.crypto.calculate_hmac(key, computer_move)
+
+        self.ui.display_message(f"I have made my choice in range [0..{max_val-1}].")
+        self.ui.display_hmac(hmac)
+
+        options = [str(i) for i in range(max_val)]
+        while True:
+            user_move_str = self.ui.get_user_choice(prompt, options, allow_help=False)
+            if user_move_str.isdigit():
+                break
+        user_move = int(user_move_str)
+        
+        result = (computer_move + user_move) % max_val
+        
+        self.ui.display_key_and_move(key, computer_move)
+        self.ui.display_message(f"Result: ({computer_move} + {user_move}) mod {max_val} = {result}")
+        return result
+
+
+# ==============================================================================
+# 9. Main Game Controller
+# ==============================================================================
+
+class GameController:
+    """Orchestrates the main game flow."""
+    def __init__(self, dice: list[Die], ui: GameUI, random_gen: FairRandomGenerator, help_gen: HelpTableGenerator):
+        self.all_dice = dice
+        self.ui = ui
+        self.random_gen = random_gen
+        self.help_gen = help_gen
 
     def run(self):
         """Starts and manages the game session."""
-        print("Let's determine who makes the first move.")
-        first_move_result = self._fair_random.generate(1)
-
-        if first_move_result is None:
-            print("Game exited.")
-            return
-
-        is_user_first = (first_move_result == 0) # User wins the toss if the result is 0 (their guess)
+        self.ui.display_message("--- Welcome to the Non-Transitive Dice Game! ---")
         
-        if is_user_first:
-            print("You won the toss! You make the first move.")
-            self._player_turn_sequence(player_is_first=True)
-        else:
-            print("I won the toss. I make the first move.")
-            self._player_turn_sequence(player_is_first=False)
+        while True:
+            self._play_round()
+            
+            play_again = input("\nPlay another round? (y/n): ").strip().lower()
+            if play_again != 'y':
+                self.ui.display_message("Thanks for playing!")
+                break
 
-    def _player_turn_sequence(self, player_is_first: bool):
-        """Handles the sequence of players choosing dice."""
-        available_dice = self._dice.copy()
+    def _play_round(self):
+        # 1. Determine who moves first
+        self.ui.display_message("\nLet's determine who picks a die first.")
+        # User wins the toss if the result is 0, computer wins if it's 1
+        first_move_result = self.random_gen.generate(2, "Enter 0 or 1. If you match my secret bit, you go first:")
+        user_goes_first = (first_move_result == 0)
+
+        # 2. Dice Selection
+        player_die, computer_die = self._select_dice(user_goes_first)
+
+        self.ui.display_message(f"\nYour die: [{player_die}]")
+        self.ui.display_message(f"My die:  [{computer_die}]")
+
+        # 3. Rolls
+        num_faces = len(player_die)
+        self.ui.display_message("\n--- Time to roll! ---")
         
-        if player_is_first:
-            user_dice = self._get_user_dice_choice(available_dice)
-            if user_dice is None: return
-            available_dice.remove(user_dice)
-            computer_dice = self._get_computer_dice_choice(available_dice)
-        else:
-            computer_dice = self._get_computer_dice_choice(available_dice)
-            print(f"I choose the {computer_dice} dice.")
-            available_dice.remove(computer_dice)
-            user_dice = self._get_user_dice_choice(available_dice)
-            if user_dice is None: return
+        # Computer's roll
+        self.ui.display_message("\nMy roll:")
+        computer_roll_index = self.random_gen.generate(num_faces, f"Enter your number (0-{num_faces-1}) for my roll:")
+        computer_roll_value = computer_die.faces[computer_roll_index]
+        self.ui.display_message(f"My roll result is face #{computer_roll_index} -> {computer_roll_value}")
 
-        print(f"You chose the {user_dice} dice.")
-        self._perform_rolls(user_dice, computer_dice)
-
-
-    def _get_user_dice_choice(self, choices: list[Dice]) -> Dice | None:
-        """Prompts the user to select a die from the available list."""
-        options = {i: str(d) for i, d in enumerate(choices)}
-        choice = self._ui.prompt_user("Choose your dice:", options)
-        return choices[int(choice)] if choice is not None else None
-
-    def _get_computer_dice_choice(self, choices: list[Dice]) -> Dice:
-        """Computer's 'strategy' for choosing a die (chooses randomly)."""
-        return secrets.choice(choices)
-
-    def _perform_rolls(self, user_dice: Dice, computer_dice: Dice):
-        """Performs the fair rolls for both user and computer."""
-        print("\nIt's time for my roll.")
-        comp_roll_index = self._fair_random.generate(self._num_faces - 1)
-        if comp_roll_index is None: return
-        comp_roll_value = computer_dice.roll(comp_roll_index)
-        print(f"My roll result is {comp_roll_value}.")
+        # Player's roll
+        self.ui.display_message("\nYour roll:")
+        player_roll_index = self.random_gen.generate(num_faces, f"Enter your number (0-{num_faces-1}) for your roll:")
+        player_roll_value = player_die.faces[player_roll_index]
+        self.ui.display_message(f"Your roll result is face #{player_roll_index} -> {player_roll_value}")
         
-        print("\nIt's time for your roll.")
-        user_roll_index = self._fair_random.generate(self._num_faces - 1)
-        if user_roll_index is None: return
-        user_roll_value = user_dice.roll(user_roll_index)
-        print(f"Your roll result is {user_roll_value}.")
-
-        # Determine and announce the winner
-        print("\n--- RESULTS ---")
-        if user_roll_value > comp_roll_value:
-            print(f"You win ({user_roll_value} > {comp_roll_value})!")
-        elif comp_roll_value > user_roll_value:
-            print(f"I win ({comp_roll_value} > {user_roll_value})!")
+        # 4. Determine Winner
+        self.ui.display_message("\n--- Results ---")
+        self.ui.display_message(f"You rolled {player_roll_value}, I rolled {computer_roll_value}.")
+        if player_roll_value > computer_roll_value:
+            self.ui.display_message("You win!")
+        elif computer_roll_value > player_roll_value:
+            self.ui.display_message("I win!")
         else:
-            print(f"It's a draw ({user_roll_value} == {comp_roll_value})!")
-        print("---------------")
-
-# -----------------------------------------------------------------------------
-# 9. SCRIPT ENTRY POINT
-# -----------------------------------------------------------------------------
-if __name__ == "__main__":
-    parser = ArgsParser()
-    dice = parser.parse(sys.argv[1:])
+            self.ui.display_message("It's a draw!")
     
-    if dice:
-        game = Game(dice)
-        game.run()
+    def _select_dice(self, user_goes_first: bool):
+        available_dice = list(self.all_dice)
+        
+        if user_goes_first:
+            self.ui.display_message("\nYou get to choose first.")
+            player_die = self._get_player_die_choice(available_dice)
+            available_dice.remove(player_die)
+            computer_die = secrets.choice(available_dice)
+            self.ui.display_message(f"I've chosen my die from the rest.")
+        else:
+            self.ui.display_message("\nI get to choose first.")
+            computer_die = secrets.choice(available_dice)
+            self.ui.display_message(f"I have chosen my die.")
+            available_dice.remove(computer_die)
+            player_die = self._get_player_die_choice(available_dice)
+
+        return player_die, computer_die
+    
+    def _get_player_die_choice(self, available_dice: list[Die]):
+        while True:
+            options = [str(d) for d in available_dice]
+            choice_str = self.ui.get_user_choice("Choose your die from the list:", options, allow_help=True)
+            
+            if choice_str == '?':
+                table = self.help_gen.generate_table(self.all_dice, ProbabilityCalculator)
+                self.ui.display_message(f"\n{table}")
+                continue # Show menu again after help
+            
+            return available_dice[int(choice_str)]
+
+
+# ==============================================================================
+# 10. Main Execution Block
+# ==============================================================================
+
+def main():
+    """
+    The main entry point of the application.
+    Parses arguments, sets up components, and starts the game.
+    """
+    try:
+        # 1. Parse and validate arguments from command line (excluding script name)
+        args = sys.argv[1:]
+        dice = DiceParser.parse(args)
+
+        # 2. Set up all components (Dependency Injection)
+        ui = GameUI()
+        crypto = CryptoProvider()
+        help_gen = HelpTableGenerator()
+        # The calculator can be used statically, so no instance needed for the controller
+        random_gen = FairRandomGenerator(crypto, ui)
+        
+        # 3. Initialize and run the game controller
+        controller = GameController(dice, ui, random_gen, help_gen)
+        controller.run()
+
+    except ValidationError as e:
+        print(e, file=sys.stderr)
+        sys.exit(1)
+    except (KeyboardInterrupt, EOFError):
+        print("\nGame interrupted. Goodbye!")
+        sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()
