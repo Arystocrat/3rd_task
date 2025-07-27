@@ -1,3 +1,5 @@
+# External dependency: Before running, please install the 'tabulate' library.
+# You can do this by running: pip install tabulate
 
 import sys
 import secrets
@@ -6,36 +8,39 @@ import hashlib
 from tabulate import tabulate
 
 # ==============================================================================
-# 1. Error Handling Class (UPDATED)
+# 1. Error Handling Class (FINAL, CORRECTED VERSION)
 # ==============================================================================
 
 class ValidationError(Exception):
     """
     Custom exception for argument validation errors.
-    Provides a formatted message including an example of correct usage.
+    Provides a platform-aware, helpful message with correct usage examples.
     """
-    _invocation_command = "python"
-
-    @staticmethod
-    def set_invocation_command(command: str):
-        """Sets the command used to run the script (e.g., 'python' or 'py')."""
-        ValidationError._invocation_command = command
-
     def __init__(self, message: str):
         self.message = message
         super().__init__(self.message)
 
     def __str__(self) -> str:
         script_name = sys.argv[0] if sys.argv else 'game.py'
-        example = (
-            f"{ValidationError._invocation_command} {script_name} "
-            f"2,2,4,4,9,9 1,1,6,6,8,8 3,3,5,5,7,7"
-        )
+        example_args = "2,2,4,4,9,9 1,1,6,6,8,8 3,3,5,5,7,7"
+        
+        # Create a platform-specific example
+        if sys.platform == "win32":
+            # For Windows, show both common commands since 'py' and 'python' can be used
+            example = (
+                f"py {script_name} {example_args}\n"
+                f"(or: python {script_name} {example_args})"
+            )
+        else:
+            # For Linux/macOS, 'python3' is the standard
+            example = f"python3 {script_name} {example_args}"
+
         return f"\nArgument Error: {self.message}\n\nExample usage:\n{example}\n"
 
 ValidationError.NOT_ENOUGH_DICE = ValidationError("Please specify at least three dice.")
 ValidationError.INCONSISTENT_FACES = ValidationError("All dice must have the same number of faces.")
 ValidationError.NON_INTEGER_VALUE = ValidationError("All dice faces must be integer values.")
+
 
 # ==============================================================================
 # 2. Data Structure for a Die
@@ -284,17 +289,11 @@ class GameController:
             return available_dice[int(choice_str)]
 
 # ==============================================================================
-# 10. Main Execution Block (UPDATED)
+# 10. Main Execution Block
 # ==============================================================================
 
 def main():
     try:
-        # Dynamically determine the command used to invoke the script
-        if 'py.exe' in sys.executable.lower():
-            ValidationError.set_invocation_command('py')
-        else:
-            ValidationError.set_invocation_command('python')
-
         args = sys.argv[1:]
         dice = DiceParser.parse(args)
         
